@@ -1,6 +1,6 @@
 {
   "name": "token-impact",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "description": "Lists the design tokens a change touches, following aliases and modes, and the CSS, Dart, Swift or TypeScript files that use them.",
   "keywords": [
     "design-tokens",
