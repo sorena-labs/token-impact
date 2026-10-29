@@ -31,16 +31,17 @@ export const USAGE = `Usage: token-impact --tokens <file> [options]
 Lists the design tokens whose resolved value changed since a commit, and the files that use them.
 
 Options:
-  --tokens <file>   A token file: DTCG, Style Dictionary or plain JSON. Repeat for several.
+  --tokens <file>   A JSON token file: DTCG, Style Dictionary or plain JSON. Repeat for several.
   --base <commit>   Compare with the commit where this branch left <commit>. Default: HEAD.
   --modes <list>    Mode names, comma separated, such as dark,light.
-  --css <glob>      Files that use tokens as CSS custom properties: --color-brand.
+  --css <glob>      Files that use tokens as CSS custom properties: --color-brand,
+                    and properties set from them, such as --fill: var(--color-brand).
   --scss <glob>     Files that use tokens as Sass variables: $color-brand.
   --camel <glob>    Files that use camelCase names: colorBrand (Dart, Swift, Kotlin, JS).
   --pascal <glob>   Files that use PascalCase names: ColorBrand.
   --snake <glob>    Files that use snake_case names: color_brand (Android resources).
   --string <glob>   Files that use the token name in quotes: "color.brand".
-  --json            Print the changes and the uses as JSON.
+  --json            Print { changes, uses } as JSON.
   --files           Print only the files that use a changed token, one per line.
   --help            Show this help.
 
