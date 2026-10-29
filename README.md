@@ -56,6 +56,7 @@ It compares the working tree with the commit where your branch left `--base`, th
 | `--string <glob>` | Files that use the token name in quotes: `"color.brand"`. |
 | `--json` | Print `{ changes, uses }` as JSON: `changes` is what [`changedTokens`](#changedtokensbase-head) returns, `uses` what [`findUses`](#findusestokens-rules--cwd-) returns. |
 | `--files` | Print only the files that use a changed token, one per line. |
+| `--check` | After the output, exit with 1 if a removed token is still used, naming each one and how many files use it. Needs a file option. |
 | `--help` | Show every option. |
 
 Repeat a file option for several globs, and quote each glob so the shell leaves it alone. `node_modules` and `.git` are skipped. Marking files as unsure needs the API.
@@ -63,6 +64,8 @@ Repeat a file option for several globs, and quote each glob so the shell leaves 
 A DTCG root token is looked for with and without `$root`: `color.accent.$root` as both `--color-accent-root` and `--color-accent`.
 
 On a wrong option, a commit it cannot find, a file that is not valid JSON, a circular reference, a glob that matches no file or a file it cannot read, it says what went wrong and exits with 1.
+
+`--check` is for CI: removing a token that code still uses breaks the UI, so the build fails and says which token and how many files.
 
 `--files` is for scripts: hand the list to whatever picks your tests and screenshots.
 

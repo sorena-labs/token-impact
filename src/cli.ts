@@ -43,10 +43,23 @@ Options:
   --string <glob>   Files that use the token name in quotes: "color.brand".
   --json            Print { changes, uses } as JSON.
   --files           Print only the files that use a changed token, one per line.
+  --check           After the output, exit with 1 if a removed token is still used.
   --help            Show this help.
 
 Repeat a file option for several globs, and quote each glob so the shell leaves it alone.
 `;
+
+const count = (n: number, noun: string) => `${n} ${noun}${n === 1 ? "" : "s"}`;
+
+/** What `--check` throws when a removed token is still used. `output` is what the command prints before the error. */
+export class CheckFailed extends Error {
+  constructor(
+    message: string,
+    readonly output: string,
+  ) {
+    super(message);
+  }
+}
 
 /** Runs the command line in `cwd` and returns what it prints. */
 export async function run(args: string[], cwd = process.cwd()): Promise<string> {
@@ -65,6 +78,7 @@ export async function run(args: string[], cwd = process.cwd()): Promise<string> 
       string: files,
       json: { type: "boolean" },
       files: { type: "boolean" },
+      check: { type: "boolean" },
       help: { type: "boolean" },
     },
   });
@@ -116,21 +130,34 @@ export async function run(args: string[], cwd = process.cwd()): Promise<string> 
     const spell = (token: string) => [...new Set([token, token.replace(/\.\$root$/, "")])].flatMap(name);
     return values[style]?.length ? [{ files: values[style], ...rest, name: spell }] : [];
   });
+  if (values.check && !rules.length) throw new Error("--check needs a file option, such as --css, to know where tokens are used.");
   const uses = await findUses(
     changes.map((change) => change.name),
     rules,
     { cwd },
   );
 
-  if (values.json) return `${JSON.stringify({ changes, uses }, null, 2)}\n`;
-  if (values.files) return uses.files.map((file) => `${file}\n`).join("");
-  return report(changes, uses, rules.length > 0);
+  const output = values.json
+    ? `${JSON.stringify({ changes, uses }, null, 2)}\n`
+    : values.files
+      ? uses.files.map((file) => `${file}\n`).join("")
+      : report(changes, uses, rules.length > 0);
+  if (values.check) {
+    const stillUsed = changes
+      .filter((change) => change.change === "removed")
+      .map((change) => ({ name: change.name, files: new Set([...(uses.byToken[change.name] ?? []), ...uses.unsure]).size }))
+      .filter((token) => token.files > 0);
+    if (stillUsed.length) {
+      const lines = stillUsed.map((token) => `  ${token.name}  in ${count(token.files, "file")}`);
+      throw new CheckFailed(["Removed tokens that are still used:", ...lines].join("\n"), output);
+    }
+  }
+  return output;
 }
 
 /** The changes as a reviewer reads them: each token, its values before and after, and the files that use it. */
 function report(changes: TokenChange[], uses: Uses, searched: boolean): string {
   if (changes.length === 0) return "No tokens changed.\n";
-  const count = (n: number, noun: string) => `${n} ${noun}${n === 1 ? "" : "s"}`;
   const show = (value: unknown) => (typeof value === "string" ? value : JSON.stringify(value));
   const lines = [`${count(changes.length, "token")} changed${searched ? `, used in ${count(uses.files.length, "file")}` : ""}.`];
 

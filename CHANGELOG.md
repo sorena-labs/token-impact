@@ -4,6 +4,8 @@ Every release, newest first. Versions follow [semantic versioning](https://semve
 
 ## Unreleased
 
+- `--check`: after printing the usual output, the command exits with 1 if a removed token is still used, and names each one with the number of files that use it.
+
 ## 0.2.0
 
 - DTCG 2025.10: root tokens (`$root`), groups that extend others (`$extends`) and JSON Pointer references (`$ref`). The command line looks for a root token with and without `$root` in its name.

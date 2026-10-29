@@ -317,6 +317,23 @@ describe("token-impact", () => {
     expect(await run(["--tokens", "tokens.json", "--css", "*.css", "--files"], cwd)).toBe("a.css\nb.css\nc.css\n");
   });
 
+  it("with --check, prints the output and then fails when a removed token is still used", async () => {
+    const { cwd } = await repo({
+      "tokens.json": tokens("#1ba"),
+      "src/link.css": "a { color: var(--color-text); }",
+      "src/rule.css": "hr { border-color: var(--color-line); }",
+    });
+    const args = ["--tokens", "tokens.json", "--css", "src/**/*.css", "--check"];
+    await writeFile(join(cwd, "tokens.json"), JSON.stringify({ color: { brand: { $value: "#1ba" }, text: { $value: "{color.brand}" } } }));
+    const failed = run([...args, "--files"], cwd);
+    await expect(failed).rejects.toThrow("Removed tokens that are still used:\n  color.line  in 1 file");
+    await expect(failed).rejects.toMatchObject({ output: "src/rule.css\n" });
+
+    await writeFile(join(cwd, "src/rule.css"), "hr { border-color: gray; }");
+    expect(await run(args, cwd)).toBe(["1 token changed, used in 0 files.", "", "color.line  removed", "  #ccc", "  Not used in the searched files.", ""].join("\n"));
+    await expect(run(["--tokens", "tokens.json", "--check"], cwd)).rejects.toThrow("--check needs a file option");
+  });
+
   it("counts every token as added when the file is new", async () => {
     const { cwd } = await repo({ "README.md": "" });
     await writeFile(join(cwd, "tokens.json"), tokens("#1ba"));
