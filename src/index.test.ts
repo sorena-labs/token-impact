@@ -147,6 +147,12 @@ describe("findUses", () => {
     expect(uses.byToken).toEqual({ brand: ["a.ts", "b.ts"] });
   });
 
+  it("counts no unsure file when there is no token to look for", async () => {
+    const cwd = await folder({ "loop.scss": ".x { color: var(--#{$name}); }" });
+    const uses = await findUses([], [{ files: ["*.scss"], name: (token) => `--${token}`, unsure: /var\(--#\{/ }], { cwd });
+    expect(uses).toEqual({ byToken: {}, unsure: [], files: [] });
+  });
+
   it("needs no boundary at an edge that is not a word character", async () => {
     const cwd = await folder({ "a.dart": "colors.brand;", "b.dart": "colors.brandText;", "c.dart": "brand;" });
     const uses = await findUses(["brand"], [{ files: ["*.dart"], name: (token) => `.${camelCase(token)}` }], { cwd });

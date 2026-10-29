@@ -95,7 +95,7 @@ export interface TokenChange {
   change: "added" | "removed" | "changed";
   /** The modes whose resolved value changed. */
   modes: string[];
-  /** When the token's own value is the same, the tokens it points at that changed. Empty otherwise. */
+  /** When the token's own value is the same, the tokens it points at directly that changed. Empty otherwise. */
   via: string[];
   /** The resolved value in each mode before the change. Modes the token is missing from are left out. */
   before: Record<string, unknown>;
@@ -156,13 +156,13 @@ export interface UseRule {
 export interface Uses {
   /** The files that use each token, sorted, as paths relative to `cwd` with `/` separators. */
   byToken: Record<string, string[]>;
-  /** Files matched by a rule's `unsure` pattern: they count as using every token. */
+  /** Files matched by a rule's `unsure` pattern: they count as using every token, so they are not repeated in `byToken`. Empty when no token was passed. */
   unsure: string[];
   /** Every file above, once, sorted. */
   files: string[];
 }
 
-/** Finds the files that use each of `tokens`, as each rule spells them. */
+/** Finds the files that use each of `tokens`, as each rule spells them. It searches the text, so a name in a comment counts too. */
 export async function findUses(tokens: string[], rules: UseRule[], { cwd = process.cwd() } = {}): Promise<Uses> {
   const byToken: Record<string, Set<string>> = Object.fromEntries(tokens.map((token) => [token, new Set<string>()]));
   const unsure = new Set<string>();
@@ -173,7 +173,8 @@ export async function findUses(tokens: string[], rules: UseRule[], { cwd = proce
       const file = path.split(sep).join("/");
       if (!texts.has(file)) texts.set(file, await readFile(join(cwd, path), "utf8").catch(() => ""));
     }
-    if (rule.unsure) for (const [file, text] of texts) if (rule.unsure.test(text)) unsure.add(file);
+    // With no tokens to look for, no file can use one, however it reads them.
+    if (rule.unsure && tokens.length) for (const [file, text] of texts) if (rule.unsure.test(text)) unsure.add(file);
 
     for (const token of tokens) {
       const spellings = [rule.name(token)].flat();

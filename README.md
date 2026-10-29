@@ -2,7 +2,7 @@
 
 Lists the design tokens a change touches, and the files that use them.
 
-Change one token and every screen that uses it can look different. Most visual test setups only know that the token file changed, so they capture every screenshot again. token-impact reads the token file before and after the change, resolves every alias in every mode, and lists the tokens whose final value changed, including tokens that changed only because an alias they point at did. Then it finds the CSS, Dart, Swift, Kotlin or TypeScript files that use them, so you rerun only the tests and screenshots those files feed, and a reviewer sees what changed.
+Change one token and every screen that uses it can look different. A test selector that works file by file only knows that the token file changed, so it captures every screenshot again. token-impact reads the token file before and after the change, resolves every alias in every mode, and lists the tokens whose final value changed, including tokens that changed only because an alias they point at did. Then it finds the CSS, Dart, Swift, Kotlin or TypeScript files that use them, so you rerun only the tests and screenshots those files feed, and a reviewer sees what changed.
 
 When it cannot be sure, it selects more, never less. An extra screenshot costs seconds; a missed one ships a change nobody saw.
 
@@ -45,19 +45,22 @@ It compares the working tree with the commit where your branch left `--base`, th
 
 | Option | What it does |
 |---|---|
-| `--tokens <file>` | A token file: DTCG, Style Dictionary or plain JSON. Repeat for several; later files win. |
-| `--base <commit>` | The commit to compare with. Default `HEAD`. |
+| `--tokens <file>` | A JSON token file: DTCG, Style Dictionary or plain JSON. Repeat for several; later files win. |
+| `--base <commit>` | Compare with the commit where this branch left `<commit>`. Default `HEAD`. |
 | `--modes <list>` | Mode names, comma separated, such as `dark,light`. |
-| `--css <glob>` | Files that use tokens as CSS custom properties: `--color-brand`. |
+| `--css <glob>` | Files that use tokens as CSS custom properties: `--color-brand`. Properties set from a token count too: with `--fill: var(--color-brand)`, every use of `--fill` is a use of `color.brand`. |
 | `--scss <glob>` | Files that use tokens as Sass variables: `$color-brand`. |
 | `--camel <glob>` | Files that use camelCase names: `colorBrand` (Dart, Swift, Kotlin, JS). |
 | `--pascal <glob>` | Files that use PascalCase names: `ColorBrand`. |
 | `--snake <glob>` | Files that use snake_case names: `color_brand` (Android resources). |
 | `--string <glob>` | Files that use the token name in quotes: `"color.brand"`. |
-| `--json` | Print the changes and the uses as JSON. |
+| `--json` | Print `{ changes, uses }` as JSON: `changes` is what [`changedTokens`](#changedtokensbase-head) returns, `uses` what [`findUses`](#findusestokens-rules--cwd-) returns. |
 | `--files` | Print only the files that use a changed token, one per line. |
+| `--help` | Show every option. |
 
-Repeat a file option for several globs, and quote each glob so the shell leaves it alone. `node_modules` and `.git` are skipped.
+Repeat a file option for several globs, and quote each glob so the shell leaves it alone. `node_modules` and `.git` are skipped. Marking files as unsure needs the API.
+
+On a wrong option, a commit it cannot find, a file that is not valid JSON or a circular reference, it says what went wrong and exits with 1.
 
 `--files` is for scripts: hand the list to whatever picks your tests and screenshots.
 
@@ -97,16 +100,21 @@ Flattens a parsed token document into one map of raw values per mode: `{ dark: {
 
 - DTCG: an object with `$value` is a token, named by its path (`color.brand`).
 - Style Dictionary: an object with `value` is a token, named by its path.
-- Lists: an item with `name` and `value` (or `$value`) is a token named by its `name` alone.
+- Lists: an item with `name` and `value` (or `$value`) is a token named by its `name` alone. Any other item is read like a group, named by its position: `spacing.tokens.1`.
 - Plain nested JSON: any other string, number or boolean is a token, named by its path.
 - Keys that start with `$` (`$type`, `$description`) are skipped.
 
-With `modes`, a value that is an object with only those keys holds one value per mode: `{ "dark": "#2f6fde", "light": "#1f5bc4" }`. Any other value is the same in every mode. If your modes live in separate files, read each file and merge the maps yourself:
+It takes the parsed document, so token files written in JavaScript, JSON5 or YAML work too: load them yourself and pass the object. The command line reads JSON only.
+
+With `modes`, a value that is an object with only those keys holds one value per mode: `{ "dark": "#2f6fde", "light": "#1f5bc4" }`. Any other value is the same in every mode. If your modes live in separate files, put each mode's file over the shared one, the same way for both sides:
 
 ```ts
-const dark = { ...readTokens(core).default, ...readTokens(darkDoc).default };
-const light = { ...readTokens(core).default, ...readTokens(lightDoc).default };
-changedTokens(baseModes, { dark, light });
+// The parsed files: core, dark and light, at the base commit and now.
+const byMode = (core: unknown, dark: unknown, light: unknown) => ({
+  dark: { ...readTokens(core).default, ...readTokens(dark).default },
+  light: { ...readTokens(core).default, ...readTokens(light).default },
+});
+changedTokens(byMode(baseCore, baseDark, baseLight), byMode(headCore, headDark, headLight));
 ```
 
 ### `changedTokens(base, head)`
@@ -116,10 +124,10 @@ The tokens whose resolved value changed in any mode, in document order with remo
 - `name`
 - `change`: `"added"`, `"removed"` or `"changed"`
 - `modes`: the modes whose resolved value changed
-- `via`: when the token's own value is the same, the tokens it points at that changed
-- `before`, `after`: the resolved value in each mode
+- `via`: when the token's own value is the same, the tokens it points at directly that changed. If `color.link` points at `color.text` and `color.text` at `color.brand`, a change to `color.brand` shows `color.text` via `color.brand` and `color.link` via `color.text`.
+- `before`, `after`: the resolved value in each mode the token has, so an added token's `before` is `{}`
 
-Values are compared by content, so reordering the keys of a composite value is not a change.
+Values are compared by content, so reordering the keys of a composite value is not a change. A circular reference on either side throws and names the loop, even one the branch has fixed, since the base side is resolved too.
 
 ### `findUses(tokens, rules, { cwd? })`
 
@@ -127,12 +135,12 @@ Finds the files that use each token. A rule has:
 
 - `files`: glob patterns, relative to `cwd`
 - `name(token)`: how a token is written in those files, one spelling or several
-- `follow`: CSS only. With `--fill: var(--color-brand)` anywhere in the rule's files, every use of `--fill` counts as a use of `color.brand` too, through any number of steps.
-- `unsure`: a pattern for files that read tokens in a way that cannot be followed, such as `/var\(--#\{/` for Sass interpolation. Those files count as using every token.
+- `follow`: CSS only. With `--fill: var(--color-brand)` anywhere in the rule's files, every use of `--fill` counts as a use of `color.brand` too, through any number of steps. It ignores selectors and media queries, so it selects more.
+- `unsure`: a pattern for files that read tokens in a way that cannot be followed, such as `/var\(--#\{/` for Sass interpolation. When any token is passed, those files count as using every token.
 
-It returns `byToken` (the files for each token), `unsure` and `files` (every file once), all sorted, with `/` separators.
+It returns `byToken` (the files for each token), `unsure` (the files that matched an `unsure` pattern, which are not repeated in `byToken`) and `files` (every file once), all sorted, with `/` separators.
 
-Names match as whole words: `--color-brand` is not found inside `--color-brand-text`, nor `colorBrand` inside `colorBrandText`. A spelling that starts or ends with a character that is not part of a name, such as the dot in `.colorBrand`, matches next to anything.
+Names match as whole words: `--color-brand` is not found inside `--color-brand-text`, nor `colorBrand` inside `colorBrandText`. A spelling that starts or ends with a character that is not part of a name, such as the dot in `.colorBrand`, matches next to anything. It searches the text and does not parse it, so a name in a comment or a string counts too, which selects more.
 
 ### `resolveTokens(tokens)`
 
@@ -141,6 +149,8 @@ Replaces every `{alias}` in one mode's map with the value it points at, through 
 ### `kebabCase`, `camelCase`, `pascalCase`, `snakeCase`
 
 The usual spellings of a token name, split at any separator and where lower case turns to upper: `color.brand-text` becomes `color-brand-text`, `colorBrandText`, `ColorBrandText` and `color_brand_text`.
+
+Digits stay with the word before them: `space-2xs` becomes `space2xs`, where lodash's `camelCase` writes `space2Xs`. Check them against your generated code: a spelling that does not match finds nothing.
 
 ## What it can miss
 
@@ -152,4 +162,4 @@ Bare camelCase names like `link` also match unrelated words. That selects more, 
 
 ## Licence
 
-MIT
+[MIT](LICENSE)
