@@ -4,6 +4,8 @@ Every release, newest first. Versions follow [semantic versioning](https://semve
 
 ## Unreleased
 
+## 0.2.0
+
 - DTCG 2025.10: root tokens (`$root`), groups that extend others (`$extends`) and JSON Pointer references (`$ref`). The command line looks for a root token with and without `$root` in its name.
 - `findUses` reads each file once and indexes it by the names in it, so large repositories are much faster: 3,000 CSS files and 400 changed tokens went from 69 s to under half a second, with the same result.
 - `findUses` throws on a pattern that matches no file and on a file it cannot read, instead of reporting fewer uses, and ignores the `g` and `y` flags of an `unsure` pattern, which made it miss files.
