@@ -1,5 +1,5 @@
 import { execFileSync } from "node:child_process";
-import { mkdir, mkdtemp, writeFile } from "node:fs/promises";
+import { chmod, mkdir, mkdtemp, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { describe, expect, it } from "vitest";
@@ -44,6 +44,31 @@ describe("readTokens", () => {
       light: { brand: "#098", radius: "12px", shadow: { x: 0, y: 1 } },
     });
   });
+
+  it("reads DTCG root tokens, and groups that extend others", () => {
+    const doc = {
+      color: { accent: { $root: { $value: "#1ba" }, soft: { $value: "{color.accent.$root}" } } },
+      field: { width: { $value: "1px" }, fill: { $value: "#fff", $description: "Base" } },
+      input: { $extends: "{field}", width: { $value: "2px" } },
+      search: { $extends: { $ref: "#/input" } },
+    };
+    expect(readTokens(doc).default).toEqual({
+      "color.accent.$root": "#1ba",
+      "color.accent.soft": "{color.accent.$root}",
+      "field.width": "1px",
+      "field.fill": "#fff",
+      "input.width": "2px",
+      "input.fill": "#fff",
+      "search.width": "2px",
+      "search.fill": "#fff",
+    });
+  });
+
+  it("throws on a group that extends itself, or extends something that is not a group", () => {
+    expect(() => readTokens({ a: { $extends: "{b}" }, b: { $extends: "{a}" } })).toThrow("Circular $extends: a -> b -> a");
+    expect(() => readTokens({ button: { secondary: { $extends: "{button}" } } })).toThrow("Circular $extends: button.secondary -> button");
+    expect(() => readTokens({ a: { $value: 1 }, b: { $extends: "{a}" } })).toThrow('b extends "{a}", which is not a group.');
+  });
 });
 
 describe("resolveTokens", () => {
@@ -70,6 +95,24 @@ describe("resolveTokens", () => {
 
   it("throws on a circular reference, naming the loop", () => {
     expect(() => resolveTokens({ a: "{b}", b: "{c}", c: "{a}" })).toThrow("Circular reference: a -> b -> c -> a");
+  });
+
+  it("follows $ref JSON Pointers to a value, a part of one, or a whole token, and leaves other files' as written", () => {
+    const tokens = readTokens({
+      base: { blue: { $value: { components: [0.1, 0.2, 0.3] } }, space: { $value: { value: 4, unit: "px" } } },
+      link: { $value: { $ref: "#/base/blue/$value" } },
+      red: { $value: { components: [{ $ref: "#/base/blue/$value/components/0" }, 0, 0] } },
+      gap: { $value: { value: { $ref: "#/base/space/$value/value" }, unit: "rem" } },
+      whole: { $value: { $ref: "#/base/space" } },
+      other: { $value: { $ref: "other.json#/base/blue/$value" } },
+    }).default!;
+    expect(resolveTokens(tokens)).toMatchObject({
+      link: { components: [0.1, 0.2, 0.3] },
+      red: { components: [0.1, 0, 0] },
+      gap: { value: 4, unit: "rem" },
+      whole: { value: 4, unit: "px" },
+      other: { $ref: "other.json#/base/blue/$value" },
+    });
   });
 });
 
@@ -111,6 +154,14 @@ describe("changedTokens", () => {
     const base = readTokens({ shadow: { $value: { x: 0, y: 1 } } });
     const head = readTokens({ shadow: { $value: { y: 1, x: 0 } } });
     expect(changedTokens(base, head)).toEqual([]);
+  });
+
+  it("names the token a $ref change came through", () => {
+    const doc = (blue: string) => readTokens({ blue: { $value: blue }, link: { $value: { $ref: "#/blue/$value" } } });
+    expect(changedTokens(doc("#00f"), doc("#11f"))).toMatchObject([
+      { name: "blue", via: [] },
+      { name: "link", via: ["blue"], after: { default: "#11f" } },
+    ]);
   });
 });
 
@@ -157,6 +208,25 @@ describe("findUses", () => {
     const cwd = await folder({ "a.dart": "colors.brand;", "b.dart": "colors.brandText;", "c.dart": "brand;" });
     const uses = await findUses(["brand"], [{ files: ["*.dart"], name: (token) => `.${camelCase(token)}` }], { cwd });
     expect(uses.byToken).toEqual({ brand: ["a.dart"] });
+  });
+
+  it("says when a pattern matches no file, and skips the folders a pattern matches", async () => {
+    const cwd = await folder({ "src/a.css": "a { color: var(--brand); }" });
+    const rules = (files: string[]) => [{ files, name: (token: string) => `--${token}` }];
+    await expect(findUses(["brand"], rules(["src/**/*.css", "scr/**/*.css"]), { cwd })).rejects.toThrow(`No file in ${cwd} matches "scr/**/*.css".`);
+    expect((await findUses(["brand"], rules(["src/**"]), { cwd })).byToken).toEqual({ brand: ["src/a.css"] });
+  });
+
+  it("counts every unsure file, whatever the pattern's flags", async () => {
+    const cwd = await folder({ "a.scss": "var(--#{$a})", "b.scss": "var(--#{$b})" });
+    const uses = await findUses(["brand"], [{ files: ["*.scss"], name: (token) => `--${token}`, unsure: /var\(--#\{/g }], { cwd });
+    expect(uses.unsure).toEqual(["a.scss", "b.scss"]);
+  });
+
+  it.skipIf(process.platform === "win32" || process.getuid?.() === 0)("stops at a file it cannot read, instead of counting it as unused", async () => {
+    const cwd = await folder({ "a.css": "a { color: var(--brand); }" });
+    await chmod(join(cwd, "a.css"), 0o000);
+    await expect(findUses(["brand"], [{ files: ["*.css"], name: (token) => `--${token}` }], { cwd })).rejects.toThrow("EACCES");
   });
 });
 
@@ -233,6 +303,18 @@ describe("token-impact", () => {
     await writeFile(join(cwd, "tokens.json"), tokens("#2cb"));
     const json = JSON.parse(await run(["--tokens", "tokens.json", "--base", "main", "--json"], cwd));
     expect(json.changes.map((change: { name: string }) => change.name)).toEqual(["color.brand", "color.text"]);
+  });
+
+  it("finds a DTCG root token by its name with and without $root", async () => {
+    const doc = (accent: string) => JSON.stringify({ color: { accent: { $root: { $value: accent }, soft: { $value: "{color.accent.$root}" } } } });
+    const { cwd } = await repo({
+      "tokens.json": doc("#1ba"),
+      "a.css": "a { color: var(--color-accent); }",
+      "b.css": "b { color: var(--color-accent-root); }",
+      "c.css": "c { color: var(--color-accent-soft); }",
+    });
+    await writeFile(join(cwd, "tokens.json"), doc("#2cb"));
+    expect(await run(["--tokens", "tokens.json", "--css", "*.css", "--files"], cwd)).toBe("a.css\nb.css\nc.css\n");
   });
 
   it("counts every token as added when the file is new", async () => {
