@@ -156,7 +156,7 @@ export interface UseRule {
 export interface Uses {
   /** The files that use each token, sorted, as paths relative to `cwd` with `/` separators. */
   byToken: Record<string, string[]>;
-  /** Files matched by a rule's `unsure` pattern: they count as using every token, so they are not repeated in `byToken`. Empty when no token was passed. */
+  /** Files matched by a rule's `unsure` pattern: they count as using every token, and are in `byToken` only under the tokens they name. Empty when no token was passed. */
   unsure: string[];
   /** Every file above, once, sorted. */
   files: string[];
