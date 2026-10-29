@@ -68,6 +68,15 @@ On a wrong option, a commit it cannot find, a file that is not valid JSON or a c
 npx token-impact --tokens tokens.json --base origin/main --css "src/**/*.css" --files > affected.txt
 ```
 
+In CI, fetch the history first. A shallow checkout has neither `origin/main` nor the commit where your branch left it. On GitHub Actions:
+
+```yaml
+- uses: actions/checkout@v4
+  with:
+    fetch-depth: 0
+- run: npx token-impact --tokens tokens.json --base origin/main --css "src/**/*.css" --files > affected.txt
+```
+
 ## API
 
 ```ts
@@ -138,7 +147,7 @@ Finds the files that use each token. A rule has:
 - `follow`: CSS only. With `--fill: var(--color-brand)` anywhere in the rule's files, every use of `--fill` counts as a use of `color.brand` too, through any number of steps. It ignores selectors and media queries, so it selects more.
 - `unsure`: a pattern for files that read tokens in a way that cannot be followed, such as `/var\(--#\{/` for Sass interpolation. When any token is passed, those files count as using every token.
 
-It returns `byToken` (the files for each token), `unsure` (the files that matched an `unsure` pattern, which are not repeated in `byToken`) and `files` (every file once), all sorted, with `/` separators.
+It returns `byToken` (the files for each token), `unsure` (the files that matched an `unsure` pattern; such a file is in `byToken` only under the tokens it names) and `files` (every file once), all sorted, with `/` separators.
 
 Names match as whole words: `--color-brand` is not found inside `--color-brand-text`, nor `colorBrand` inside `colorBrandText`. A spelling that starts or ends with a character that is not part of a name, such as the dot in `.colorBrand`, matches next to anything. It searches the text and does not parse it, so a name in a comment or a string counts too, which selects more.
 
@@ -159,6 +168,10 @@ Digits stay with the word before them: `space-2xs` becomes `space2xs`, where lod
 - Values outside the token files, such as a theme engine that derives colours in code. List the files it writes, or treat a change to it as a change to everything.
 
 Bare camelCase names like `link` also match unrelated words. That selects more, never less; a spelling with its owner, such as `.${camelCase(token)}` or `` `colors.${camelCase(token)}` ``, selects less.
+
+## Contributing
+
+See [CONTRIBUTING.md](CONTRIBUTING.md) for how to build, test and send a change, and [CHANGELOG.md](CHANGELOG.md) for what each release added.
 
 ## Licence
 
