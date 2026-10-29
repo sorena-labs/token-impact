@@ -4,6 +4,8 @@ Every release, newest first. Versions follow [semantic versioning](https://semve
 
 ## Unreleased
 
+## 0.1.0
+
 - `token-impact`: a command that lists the tokens whose resolved value changed since a commit, mode by mode, with their values before and after and the files that use them. `--json` prints it for scripts and `--files` prints only the file list.
 - `readTokens`: reads DTCG, Style Dictionary, lists of named tokens and plain nested JSON, one map per mode.
 - `changedTokens`: the tokens whose resolved value changed, including tokens that changed only through an alias, with the modes that changed and the alias the change came through.
