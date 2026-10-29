@@ -60,7 +60,9 @@ It compares the working tree with the commit where your branch left `--base`, th
 
 Repeat a file option for several globs, and quote each glob so the shell leaves it alone. `node_modules` and `.git` are skipped. Marking files as unsure needs the API.
 
-On a wrong option, a commit it cannot find, a file that is not valid JSON or a circular reference, it says what went wrong and exits with 1.
+A DTCG root token is looked for with and without `$root`: `color.accent.$root` as both `--color-accent-root` and `--color-accent`.
+
+On a wrong option, a commit it cannot find, a file that is not valid JSON, a circular reference, a glob that matches no file or a file it cannot read, it says what went wrong and exits with 1.
 
 `--files` is for scripts: hand the list to whatever picks your tests and screenshots.
 
@@ -102,7 +104,9 @@ Flattens a parsed token document into one map of raw values per mode: `{ dark: {
 - Style Dictionary: an object with `value` is a token, named by its path.
 - Lists: an item with `name` and `value` (or `$value`) is a token named by its `name` alone. Any other item is read like a group, named by its position: `spacing.tokens.1`.
 - Plain nested JSON: any other string, number or boolean is a token, named by its path.
-- Keys that start with `$` (`$type`, `$description`) are skipped.
+- DTCG root tokens keep `$root` in their name: `color.accent.$root`.
+- A DTCG group with `$extends` (`"{field}"` or `{ "$ref": "#/field" }`) gets the tokens of the group it names, and its own tokens replace inherited ones whole. A loop, or extending something that is not a group, throws.
+- Other keys that start with `$` (`$type`, `$description`) are skipped.
 
 It takes the parsed document, so token files written in JavaScript, JSON5 or YAML work too: load them yourself and pass the object. The command line reads JSON only.
 
@@ -136,15 +140,17 @@ Finds the files that use each token. A rule has:
 - `files`: glob patterns, relative to `cwd`
 - `name(token)`: how a token is written in those files, one spelling or several
 - `follow`: CSS only. With `--fill: var(--color-brand)` anywhere in the rule's files, every use of `--fill` counts as a use of `color.brand` too, through any number of steps. It ignores selectors and media queries, so it selects more.
-- `unsure`: a pattern for files that read tokens in a way that cannot be followed, such as `/var\(--#\{/` for Sass interpolation. When any token is passed, those files count as using every token.
+- `unsure`: a pattern for files that read tokens in a way that cannot be followed, such as `/var\(--#\{/` for Sass interpolation. When any token is passed, those files count as using every token. Its `g` and `y` flags are ignored.
 
 It returns `byToken` (the files for each token), `unsure` (the files that matched an `unsure` pattern, which are not repeated in `byToken`) and `files` (every file once), all sorted, with `/` separators.
+
+A pattern that matches no file throws, and so does a file it cannot read, since either would hide uses. Folders a pattern matches are skipped. Each file is read once, however many rules match it, and indexed by the names in it, so the time grows with the size of the files, not with the number of tokens times the number of files.
 
 Names match as whole words: `--color-brand` is not found inside `--color-brand-text`, nor `colorBrand` inside `colorBrandText`. A spelling that starts or ends with a character that is not part of a name, such as the dot in `.colorBrand`, matches next to anything. It searches the text and does not parse it, so a name in a comment or a string counts too, which selects more.
 
 ### `resolveTokens(tokens)`
 
-Replaces every `{alias}` in one mode's map with the value it points at, through any number of steps, including aliases inside strings (`"0 0 0 2px {color.focus}"`) and inside composite values. A reference to a missing token is left as written; a circular one throws and names the loop.
+Replaces every `{alias}` in one mode's map with the value it points at, through any number of steps, including aliases inside strings (`"0 0 0 2px {color.focus}"`) and inside composite values. DTCG JSON Pointers work too: `{ "$ref": "#/color/brand/$value" }` is the value of `color.brand`, and `#/color/brand/$value/components/0` one part of it. A reference to a missing token is left as written; a circular one throws and names the loop.
 
 ### `kebabCase`, `camelCase`, `pascalCase`, `snakeCase`
 
@@ -157,6 +163,7 @@ Digits stay with the word before them: `space-2xs` becomes `space2xs`, where lod
 - A token whose name is built at run time, such as `` `var(--${name})` ``. Mark those files with `unsure`.
 - A spelling you did not give. If your generated code spells `color.brand` as `AppColors.primary`, pass a `name` that says so.
 - Values outside the token files, such as a theme engine that derives colours in code. List the files it writes, or treat a change to it as a change to everything.
+- A `$ref` into another file, such as `other.json#/color/brand/$value`. It is left as written, so a change behind it is not seen. Pass every file with `--tokens`, and point inside the document instead.
 
 Bare camelCase names like `link` also match unrelated words. That selects more, never less; a spelling with its owner, such as `.${camelCase(token)}` or `` `colors.${camelCase(token)}` ``, selects less.
 

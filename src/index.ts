@@ -26,16 +26,17 @@ export interface ReadOptions {
 export function readTokens(doc: unknown, { modes = [] }: ReadOptions = {}): Record<string, Tokens> {
   const flat: Tokens = {};
   const visit = (node: unknown, path: string[]): void => {
-    if (isObject(node) && ("$value" in node || "value" in node)) {
+    if (isToken(node)) {
       flat[path.join(".")] = "$value" in node ? node.$value : node.value;
     } else if (Array.isArray(node)) {
       node.forEach((item, index) => {
-        if (isObject(item) && typeof item.name === "string" && ("$value" in item || "value" in item)) {
+        if (isToken(item) && typeof item.name === "string") {
           flat[item.name] = "$value" in item ? item.$value : item.value;
         } else visit(item, [...path, String(index)]);
       });
     } else if (isObject(node)) {
-      for (const [key, child] of Object.entries(node)) if (!key.startsWith("$")) visit(child, [...path, key]);
+      // `$root` is the group's own token; every other `$` key describes the group.
+      for (const [key, child] of Object.entries(extend(doc, node, path))) if (!key.startsWith("$") || key === "$root") visit(child, [...path, key]);
     } else if (node !== null && node !== undefined && path.length > 0) {
       flat[path.join(".")] = node;
     }
@@ -54,12 +55,54 @@ export function readTokens(doc: unknown, { modes = [] }: ReadOptions = {}): Reco
   return byMode;
 }
 
+/**
+ * A DTCG group with the tokens of the group its `$extends` names merged in. Groups merge; a token of its own
+ * replaces an inherited one whole.
+ */
+function extend(doc: unknown, group: Record<string, unknown>, path: string[], chain: string[] = []): Record<string, unknown> {
+  const ref = group.$extends;
+  if (ref === undefined) return group;
+  const target =
+    typeof ref === "string" ? WHOLE_REF.exec(ref)?.[1]!.split(".") : isObject(ref) && typeof ref.$ref === "string" ? pointerPath(ref.$ref) : undefined;
+  const base = target?.reduce<unknown>((node, key) => (isObject(node) ? node[key] : undefined), doc);
+  const name = path.join(".");
+  if (!target || !isGroup(base)) throw new Error(`${name} extends ${JSON.stringify(ref)}, which is not a group.`);
+  // Extending a group it is part of would nest it in itself without end.
+  if (chain.includes(target.join(".")) || target.every((key, index) => path[index] === key)) {
+    throw new Error(`Circular $extends: ${[...chain, name, target.join(".")].join(" -> ")}`);
+  }
+  return merge(extend(doc, base, target, [...chain, name]), group);
+}
+
+function merge(base: Record<string, unknown>, own: Record<string, unknown>): Record<string, unknown> {
+  const merged = { ...base };
+  for (const [key, value] of Object.entries(own)) {
+    const inherited = merged[key];
+    merged[key] = isGroup(inherited) && isGroup(value) ? merge(inherited, value) : value;
+  }
+  return merged;
+}
+
+/** `#/color/brand` to `["color", "brand"]`. Undefined for a pointer into another file. */
+function pointerPath(pointer: string): string[] | undefined {
+  if (!pointer.startsWith("#/")) return undefined;
+  return pointer.slice(2).split("/").map((key) => key.replaceAll("~1", "/").replaceAll("~0", "~"));
+}
+
+/** The name of the token a `$ref` points into, and the keys inside its value: `#/a/b/$value/0` is `a.b` and `["0"]`. */
+function pointed(pointer: string): [name: string, keys: string[]] | undefined {
+  const path = pointerPath(pointer);
+  if (!path) return undefined;
+  const at = path.includes("$value") ? path.indexOf("$value") : path.length;
+  return [path.slice(0, at).join("."), path.slice(at + 1)];
+}
+
 const REF = /\{([^{}]+)\}/g;
 const WHOLE_REF = /^\{([^{}]+)\}$/;
 
 /**
- * Replaces every `{alias}` with the value it points at, through any number of steps. A reference to a
- * missing token is left as written; a circular one throws.
+ * Replaces every `{alias}` and `{ "$ref": "#/json/pointer" }` with the value it points at, through any number
+ * of steps. A reference to a missing token or another file is left as written; a circular one throws.
  */
 export function resolveTokens(tokens: Tokens): Tokens {
   const done = new Map<string, unknown>();
@@ -84,6 +127,11 @@ export function resolveTokens(tokens: Tokens): Tokens {
       });
     }
     if (Array.isArray(raw)) return raw.map(walk);
+    if (isObject(raw) && typeof raw.$ref === "string") {
+      const target = pointed(raw.$ref);
+      if (!target || !Object.hasOwn(tokens, target[0])) return raw;
+      return target[1].reduce<unknown>((node, key) => (isObject(node) || Array.isArray(node) ? (node as Record<string, unknown>)[key] : undefined), value(target[0]));
+    }
     if (isObject(raw)) return Object.fromEntries(Object.entries(raw).map(([key, child]) => [key, walk(child)]));
     return raw;
   };
@@ -132,8 +180,10 @@ export function changedTokens(base: Record<string, Tokens>, head: Record<string,
   for (const change of changes) {
     const rawAfter = pick(head, change.name);
     if (change.change === "changed" && same(pick(base, change.name), rawAfter)) {
-      const refs = [...JSON.stringify(rawAfter).matchAll(REF)].map((match) => match[1]!);
-      change.via = [...new Set(refs)].filter((ref) => changed.has(ref));
+      const json = JSON.stringify(rawAfter);
+      const refs = [...json.matchAll(REF)].map((match) => match[1]!);
+      const pointers = [...json.matchAll(/"\$ref":"([^"]+)"/g)].flatMap((match) => pointed(match[1]!)?.[0] ?? []);
+      change.via = [...new Set([...refs, ...pointers])].filter((ref) => changed.has(ref));
     }
   }
   return changes.sort((a, b) => Number(a.change === "removed") - Number(b.change === "removed"));
@@ -162,37 +212,52 @@ export interface Uses {
   files: string[];
 }
 
-/** Finds the files that use each of `tokens`, as each rule spells them. It searches the text, so a name in a comment counts too. */
+/**
+ * Finds the files that use each of `tokens`, as each rule spells them. It searches the text, so a name in a comment counts too.
+ * A pattern that matches no file, or a file it cannot read, throws: either would hide uses.
+ */
 export async function findUses(tokens: string[], rules: UseRule[], { cwd = process.cwd() } = {}): Promise<Uses> {
   const byToken: Record<string, Set<string>> = Object.fromEntries(tokens.map((token) => [token, new Set<string>()]));
   const unsure = new Set<string>();
   const exclude = (path: string) => /(^|[\\/])(node_modules|\.git)$/.test(path);
+  const read = new Map<string, string | undefined>(); // Every file read so far, by path, for all rules. Undefined for a folder.
   for (const rule of rules) {
-    const texts = new Map<string, string>();
-    for await (const path of glob(rule.files, { cwd, exclude })) {
-      const file = path.split(sep).join("/");
-      if (!texts.has(file)) texts.set(file, await readFile(join(cwd, path), "utf8").catch(() => ""));
+    const matched = new Map<string, string[]>();
+    for (const pattern of rule.files) {
+      const files: string[] = [];
+      for await (const path of glob(pattern, { cwd, exclude })) files.push(path.split(sep).join("/"));
+      matched.set(pattern, files);
     }
-    // With no tokens to look for, no file can use one, however it reads them.
-    if (rule.unsure && tokens.length) for (const [file, text] of texts) if (rule.unsure.test(text)) unsure.add(file);
+    const files = [...new Set([...matched.values()].flat())];
+    const queue = files.filter((file) => !read.has(file));
+    // A few reads at a time: enough to keep the disk busy, too few to run out of file handles.
+    await Promise.all(
+      Array.from({ length: 16 }, async () => {
+        for (let file = queue.pop(); file !== undefined; file = queue.pop()) read.set(file, await readText(join(cwd, file)));
+      }),
+    );
+    for (const [pattern, files] of matched) {
+      if (!files.some((file) => read.get(file) !== undefined)) throw new Error(`No file in ${cwd} matches "${pattern}".`);
+    }
+    const texts = new Map(files.flatMap((file) => (read.get(file) === undefined ? [] : [[file, read.get(file)!] as const])));
 
+    // With no tokens to look for, no file can use one, however it reads them.
+    if (rule.unsure && tokens.length) {
+      // Without g or y, test() starts at the beginning of each file instead of where the last match ended.
+      const pattern = new RegExp(rule.unsure.source, rule.unsure.flags.replace(/[gy]/g, ""));
+      for (const [file, text] of texts) if (pattern.test(text)) unsure.add(file);
+    }
+
+    const inFiles = search(texts);
+    const declarations = rule.follow
+      ? [...texts.values()].flatMap((text) => [...text.matchAll(/(--[\w-]+)\s*:([^;{}]*)/g)].map(([, property, value]) => [property!, value!] as const))
+      : [];
+    const inValues = search(new Map(declarations.map((declaration) => [declaration, declaration[1]])));
     for (const token of tokens) {
-      const spellings = [rule.name(token)].flat();
-      const patterns = spellings.map(word);
-      // Each pass adds the custom properties set from a spelling found so far, until none are new.
-      for (let added = Boolean(rule.follow); added; ) {
-        added = false;
-        for (const text of texts.values()) {
-          for (const [, property, value] of text.matchAll(/(--[\w-]+)\s*:([^;{}]*)/g)) {
-            if (!spellings.includes(property!) && patterns.some((pattern) => pattern.test(value!))) {
-              spellings.push(property!);
-              patterns.push(word(property!));
-              added = true;
-            }
-          }
-        }
-      }
-      for (const [file, text] of texts) if (patterns.some((pattern) => pattern.test(text))) byToken[token]!.add(file);
+      const spellings = new Set([rule.name(token)].flat());
+      // A custom property set from a spelling is one more spelling, so the set grows while it is walked.
+      if (rule.follow) for (const spelling of spellings) for (const [property] of inValues(spelling)) spellings.add(property);
+      for (const spelling of spellings) for (const file of inFiles(spelling)) byToken[token]!.add(file);
     }
   }
   const sorted = (files: Iterable<string>) => [...files].sort();
@@ -200,6 +265,50 @@ export async function findUses(tokens: string[], rules: UseRule[], { cwd = proce
     byToken: Object.fromEntries(Object.entries(byToken).map(([token, files]) => [token, sorted(files)])),
     unsure: sorted(unsure),
     files: sorted(new Set([...unsure, ...Object.values(byToken).flatMap((files) => [...files])])),
+  };
+}
+
+/** A file's text, or undefined for a folder, or for a file removed or a link broken since the search found it. */
+function readText(path: string): Promise<string | undefined> {
+  return readFile(path, "utf8").catch((error: NodeJS.ErrnoException) => {
+    if (error.code === "EISDIR" || error.code === "ENOENT") return undefined;
+    throw error;
+  });
+}
+
+const DASHED_NAMES = /[A-Za-z0-9_-]+/g;
+const NAMES = /[A-Za-z0-9_]+/g;
+/** The names a spelling is matched among, made of the characters `word` draws its edges at. */
+const namesLike = (spelling: string) => (spelling.includes("-") ? DASHED_NAMES : NAMES);
+
+/**
+ * Indexes `texts` by the names in them, and returns a search for the keys of the texts that hold a spelling as
+ * `word` matches it. Wherever a spelling matches, every name in it is a whole name in the text, so only the
+ * texts holding its longest name need testing.
+ */
+function search<K>(texts: Map<K, string>): (spelling: string) => K[] {
+  const indexes = new Map<RegExp, Map<string, K[]>>();
+  const index = (names: RegExp) => {
+    let byName = indexes.get(names);
+    if (!byName) {
+      indexes.set(names, (byName = new Map()));
+      for (const [key, text] of texts) {
+        for (const name of new Set(text.match(names))) {
+          const keys = byName.get(name);
+          if (keys) keys.push(key);
+          else byName.set(name, [key]);
+        }
+      }
+    }
+    return byName;
+  };
+  return (spelling) => {
+    const names = namesLike(spelling);
+    const longest = (spelling.match(names) ?? []).reduce((a, b) => (b.length > a.length ? b : a), "");
+    const keys = longest ? (index(names).get(longest) ?? []) : [...texts.keys()];
+    if (longest === spelling) return keys; // The spelling is one whole name, so holding it is matching it.
+    const pattern = word(spelling);
+    return keys.filter((key) => pattern.test(texts.get(key)!));
   };
 }
 
@@ -235,6 +344,14 @@ export const snakeCase = (name: string): string => words(name).join("_");
 
 function isObject(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null && !Array.isArray(value);
+}
+
+function isToken(value: unknown): value is Record<string, unknown> {
+  return isObject(value) && ("$value" in value || "value" in value);
+}
+
+function isGroup(value: unknown): value is Record<string, unknown> {
+  return isObject(value) && !isToken(value);
 }
 
 /** Deep equality for JSON values, whatever the key order. */

@@ -110,9 +110,12 @@ export async function run(args: string[], cwd = process.cwd()): Promise<string> 
     read(values.tokens.map((file) => [file, readFileSync(resolve(cwd, file), "utf8")])),
   );
 
-  const rules = (Object.keys(STYLES) as (keyof typeof STYLES)[]).flatMap((style) =>
-    values[style]?.length ? [{ files: values[style], ...STYLES[style] }] : [],
-  );
+  const rules = (Object.keys(STYLES) as (keyof typeof STYLES)[]).flatMap((style) => {
+    const { name, ...rest } = STYLES[style];
+    // Generated code may leave `$root` out of a DTCG root token's name, so look for it with and without.
+    const spell = (token: string) => [...new Set([token, token.replace(/\.\$root$/, "")])].flatMap(name);
+    return values[style]?.length ? [{ files: values[style], ...rest, name: spell }] : [];
+  });
   const uses = await findUses(
     changes.map((change) => change.name),
     rules,
